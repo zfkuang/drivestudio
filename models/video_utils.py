@@ -48,7 +48,8 @@ def render_images(
     dataset: SplitWrapper,
     compute_metrics: bool = False,
     compute_error_map: bool = False,
-    vis_indices: Optional[List[int]] = None
+    vis_indices: Optional[List[int]] = None,
+    force_downscale: Optional[int] = None
 ):
     """
     Render pixel-related outputs from a model.
@@ -64,7 +65,8 @@ def render_images(
         trainer=trainer,
         compute_metrics=compute_metrics,
         compute_error_map=compute_error_map,
-        vis_indices=vis_indices
+        vis_indices=vis_indices,
+        force_downscale=force_downscale
     )
     if compute_metrics:
         num_samples = len(dataset) if vis_indices is None else len(vis_indices)
@@ -90,6 +92,7 @@ def render(
     compute_metrics: bool = False,
     compute_error_map: bool = False,
     vis_indices: Optional[List[int]] = None,
+    force_downscale: Optional[int] = None,
 ):
     """
     Renders a dataset utilizing a specified render function.
@@ -127,6 +130,8 @@ def render(
     with torch.no_grad():
         indices = vis_indices if vis_indices is not None else range(len(dataset))
         camera_downscale = trainer._get_downscale_factor()
+        if force_downscale is not None:
+            camera_downscale = force_downscale
         for i in tqdm(indices, desc=f"rendering {dataset.split}", dynamic_ncols=True):
             # get image and camera infos
             image_infos, cam_infos = dataset.get_image(i, camera_downscale)

@@ -124,7 +124,11 @@ class WaymoProcessor(object):
             id_list = range(len(self))
         else:
             id_list = self.process_id_list
-        track_parallel_progress(self.convert_one, id_list, self.workers)
+        if self.workers == 1:
+            for file_idx in id_list:
+                self.convert_one(file_idx)
+        else:
+            track_parallel_progress(self.convert_one, id_list, self.workers)
         print("\nFinished ...")
 
     def convert_one(self, file_idx):
@@ -270,8 +274,9 @@ class WaymoProcessor(object):
             # the camera only split doesn't contain lidar points.
             return
 
-        # collect first return only
+        # collect all returns
         range_images_flow, _, _ = parse_range_image_flow_and_camera_projection(frame)
+        
         (
             origins,
             points,
@@ -288,12 +293,22 @@ class WaymoProcessor(object):
             range_image_top_pose,
             ri_index=0,
         )
+        
         origins = np.concatenate(origins, axis=0)
         points = np.concatenate(points, axis=0)
         ground_label = get_ground_np(points)
+        cp_points = np.concatenate(cp_points, axis=0)
         intensity = np.concatenate(intensity, axis=0)
         elongation = np.concatenate(elongation, axis=0)
         laser_ids = np.concatenate(laser_ids, axis=0)
+        
+        # Normalize the camera projection points to [0, 1]
+        cp_points = cp_points.astype(np.float32)
+        for cam in frame.context.camera_calibrations:
+            cp_mask_1 = cp_points[..., 0] == cam.name
+            cp_points[cp_mask_1, 1:3] = cp_points[cp_mask_1, 1:3] / np.array([cam.width, cam.height])            
+            cp_mask_2 = cp_points[..., 3] == cam.name
+            cp_points[cp_mask_2, 4:6] = cp_points[cp_mask_2, 4:6] / np.array([cam.width, cam.height])
 
         #  -1: no-flow-label, the point has no flow information.
         #   0:  unlabeled or "background,", i.e., the point is not contained in a
@@ -313,6 +328,7 @@ class WaymoProcessor(object):
                 intensity,
                 elongation,
                 laser_ids,
+                cp_points,
             )
         )
         pc_path = (

@@ -41,6 +41,7 @@ def do_evaluation(
             dataset=dataset.test_image_set,
             compute_metrics=True,
             compute_error_map=cfg.render.vis_error,
+            force_downscale=2
         )
         
         if log_metrics:

@@ -1,0 +1,16 @@
+.DS_Store
+lightning_logs
+__pycache__
+.idea
+.vscode
+
+/downloads
+/clip-vit-large-patch14
+/wandb
+*.pth
+*.safetensors
+*.ply
+**/*.egg-info/
+results/*
+torch_hub/*
+promptda_plus/torch_hub/*

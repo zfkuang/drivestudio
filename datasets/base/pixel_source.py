@@ -8,9 +8,11 @@ import logging
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
+from typing import Optional
 
 import torch
 from torch import Tensor
+
 from datasets.dataset_meta import DATASETS_CONFIG
 
 logger = logging.getLogger()
@@ -105,6 +107,10 @@ class CameraData(object):
         load_dynamic_mask: bool = False,
         # whether to load the sky masks
         load_sky_mask: bool = False,
+        # whether to load the completed depths
+        load_completed_depths: bool = False,
+        # the stride of the completed depths
+        completed_depth_timestep_stride: int = 1,
         # the size to load the images
         downscale_when_loading: float = 1.0,
         # whether to undistort the images
@@ -122,7 +128,7 @@ class CameraData(object):
         self.undistort = undistort
         self.buffer_downscale = buffer_downscale
         self.device = device
-        
+        self.completed_depth_timestep_stride = completed_depth_timestep_stride
         self.cam_name = DATASETS_CONFIG[dataset_name][cam_id]["camera_name"]
         self.original_size = DATASETS_CONFIG[dataset_name][cam_id]["original_size"]
         self.load_size = [
@@ -139,6 +145,10 @@ class CameraData(object):
             self.load_dynamic_masks()
         if load_sky_mask:
             self.load_sky_masks()
+        if load_completed_depths:
+            self.load_completed_depths()
+        else:
+            self.completed_depths = None
         self.lidar_depth_maps = None # will be loaded by: self.load_depth()
         self.image_error_maps = None # will be built by: self.build_image_error_buffer()
         self.to(self.device)
@@ -194,6 +204,7 @@ class CameraData(object):
         img_filepaths = []
         dynamic_mask_filepaths, sky_mask_filepaths = [], []
         human_mask_filepaths, vehicle_mask_filepaths = [], []
+        completed_depth_filepaths, completed_depth_timesteps = [], []
         
         fine_mask_path = os.path.join(self.data_path, "fine_dynamic_masks")
         if os.path.exists(fine_mask_path):
@@ -202,7 +213,6 @@ class CameraData(object):
         else:
             dynamic_mask_dir = "dynamic_masks"
             logger.info("Using coarse dynamic masks")
-
         # Note: we assume all the files in waymo dataset are synchronized
         for t in range(self.start_timestep, self.end_timestep):
             img_filepaths.append(
@@ -226,11 +236,18 @@ class CameraData(object):
             sky_mask_filepaths.append(
                 os.path.join(self.data_path, "sky_masks", f"{t:03d}_{self.cam_id}.png")
             )
+            completed_depth_filepath = os.path.join(self.data_path, "completed_depth", f"{t:03d}_{self.cam_id}.npy")
+            if os.path.exists(completed_depth_filepath):
+                completed_depth_filepaths.append(completed_depth_filepath)
+                completed_depth_timesteps.append(t)
+                
         self.img_filepaths = np.array(img_filepaths)
         self.dynamic_mask_filepaths = np.array(dynamic_mask_filepaths)
         self.human_mask_filepaths = np.array(human_mask_filepaths)
         self.vehicle_mask_filepaths = np.array(vehicle_mask_filepaths)
         self.sky_mask_filepaths = np.array(sky_mask_filepaths)
+        self.completed_depth_filepaths = np.array(completed_depth_filepaths)[::self.completed_depth_timestep_stride]
+        self.completed_depth_timesteps = np.array(completed_depth_timesteps)[::self.completed_depth_timestep_stride]
         
     def load_images(self):
         images = []
@@ -257,7 +274,34 @@ class CameraData(object):
             images.append(rgb)
         # normalize the images to [0, 1]
         self.images = images = torch.from_numpy(np.stack(images, axis=0)) / 255
-    
+        
+    def load_completed_depths(self):
+        completed_depths = []
+        for ix, fname in tqdm(
+            enumerate(self.completed_depth_filepaths),
+            desc="Loading completed depths",
+            dynamic_ncols=True,
+            total=len(self.completed_depth_filepaths),
+        ):
+            completed_depth = np.load(fname).squeeze()
+            # resize the completed depth to the load_size
+            completed_depth = cv2.resize(
+                completed_depth,
+                (self.load_size[1], self.load_size[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            # undistort the completed depth
+            if self.undistort:
+                if ix == 0:
+                    print("undistorting completed depth")
+                completed_depth = cv2.undistort(
+                    completed_depth,
+                    self.intrinsics[ix].numpy(),
+                    self.distortions[ix].numpy(),
+                )
+            completed_depths.append(completed_depth)
+        self.completed_depths = torch.from_numpy(np.stack(completed_depths, axis=0)).float()
+        
     def load_egocar_mask(self):
         """
         Since in some datasets, the ego car body is visible in the images,
@@ -474,6 +518,13 @@ class CameraData(object):
         if self.image_error_maps is not None:
             self.image_error_maps = self.image_error_maps.to(device)
     
+    def get_completed_depth(self, frame_idx: int) -> Tensor:
+        """
+        Get the completed depth for the given frame index.
+        If timestep_idx is provided, it will override the frame_idx.
+        """
+
+    
     def get_image(self, frame_idx: int) -> Dict[str, Tensor]:
         """
         Get the rays for rendering the given frame index.
@@ -486,7 +537,7 @@ class CameraData(object):
         dynamic_mask, human_mask, vehicle_mask = None, None, None
         pixel_coords, normalized_time = None, None
         egocar_mask = None
-        
+        completed_depth = None
         if self.images is not None:
             rgb = self.images[frame_idx]
             if self.downscale_factor != 1.0:
@@ -577,6 +628,15 @@ class CameraData(object):
                     .squeeze(0)
                     .squeeze(0)
                 )
+        if self.completed_depths is not None and frame_idx in self.completed_depth_timesteps:
+            completed_depth_idx = np.where(self.completed_depth_timesteps == frame_idx)[0][0]
+            completed_depth = self.completed_depths[completed_depth_idx]
+            if self.downscale_factor != 1.0:
+                completed_depth = torch.nn.functional.interpolate(
+                    completed_depth.unsqueeze(0).unsqueeze(0),
+                    scale_factor=self.downscale_factor,
+                    mode="nearest",
+                ).squeeze(0).squeeze(0)
             
         lidar_depth_map = None
         if self.lidar_depth_maps is not None:
@@ -643,6 +703,7 @@ class CameraData(object):
             "vehicle_masks": vehicle_mask,
             "egocar_masks": egocar_mask,
             "lidar_depth_map": lidar_depth_map,
+            "completed_depth": completed_depth,
         }
         image_infos = {k: v for k, v in _image_infos.items() if v is not None}
         
@@ -808,6 +869,13 @@ class ScenePixelSource(abc.ABC):
         unique_cam_idx = img_idx % self.num_cams
         frame_idx = img_idx // self.num_cams
         return unique_cam_idx, frame_idx
+
+    def get_completed_depth(self, img_idx: int) -> Tensor:
+        """
+        Get the completed depth for the given image index.
+        """
+        unique_cam_idx, frame_idx = self.parse_img_idx(img_idx)
+        return self.camera_data[unique_cam_idx].get_completed_depth(frame_idx)
 
     def get_image(self, img_idx: int) -> Dict[str, Tensor]:
         """

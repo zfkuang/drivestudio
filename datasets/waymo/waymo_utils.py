@@ -317,6 +317,7 @@ def convert_range_image_to_point_cloud_flow(
     for c in calibrations:
         range_image = range_images[c.name][ri_index]
         range_image_flow = range_images_flow[c.name][ri_index]
+        camera_projection = camera_projections[c.name][ri_index]
         if len(c.beam_inclinations) == 0:  # pylint: disable=g-explicit-length-test
             beam_inclinations = range_image_utils.compute_inclination(
                 tf.constant([c.beam_inclination_min, c.beam_inclination_max]),
@@ -334,12 +335,17 @@ def convert_range_image_to_point_cloud_flow(
         range_image_flow_tensor = tf.reshape(
             tf.convert_to_tensor(range_image_flow.data), range_image_flow.shape.dims
         )
+        camera_projection = tf.reshape(
+            tf.convert_to_tensor(camera_projection.data), camera_projection.shape.dims
+        )
+        
         pixel_pose_local = None
         frame_pose_local = None
         if c.name == dataset_pb2.LaserName.TOP:
             pixel_pose_local = range_image_top_pose_tensor
             pixel_pose_local = tf.expand_dims(pixel_pose_local, axis=0)
             frame_pose_local = tf.expand_dims(frame_pose, axis=0)
+            
         range_image_mask = range_image_tensor[..., 0] > 0
         range_image_intensity = range_image_tensor[..., 1]
         range_image_elongation = range_image_tensor[..., 2]
@@ -358,12 +364,14 @@ def convert_range_image_to_point_cloud_flow(
             pixel_pose=pixel_pose_local,
             frame_pose=frame_pose_local,
         )
+        
         origins_cartesian = tf.squeeze(origins_cartesian, axis=0)
         points_cartesian = tf.squeeze(points_cartesian, axis=0)
 
         origins_tensor = tf.gather_nd(origins_cartesian, mask_index)
         points_tensor = tf.gather_nd(points_cartesian, mask_index)
-
+        
+        camera_projections_tensor = tf.gather_nd(camera_projection, mask_index)
         points_intensity_tensor = tf.gather_nd(range_image_intensity, mask_index)
         points_elongation_tensor = tf.gather_nd(range_image_elongation, mask_index)
 
@@ -376,6 +384,7 @@ def convert_range_image_to_point_cloud_flow(
 
         origins.append(origins_tensor.numpy())
         points.append(points_tensor.numpy())
+        cp_points.append(camera_projections_tensor.numpy())
         points_intensity.append(points_intensity_tensor.numpy())
         points_elongation.append(points_elongation_tensor.numpy())
         laser_ids.append(np.full_like(points_intensity_tensor.numpy(), c.name - 1))

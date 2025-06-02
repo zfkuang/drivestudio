@@ -38,7 +38,7 @@ class SceneLidarSource(abc.ABC):
     cached_directions: Tensor = None
     cached_ranges: Tensor = None
     cached_normalized_timestamps: Tensor = None
-
+    cp_points: Tensor = None
     def __init__(
         self,
         lidar_data_config: OmegaConf,
@@ -84,6 +84,8 @@ class SceneLidarSource(abc.ABC):
             self.visible_masks = self.visible_masks.to(device)
         if self.colors is not None:
             self.colors = self.colors.to(device)
+        if self.cp_points is not None:
+            self.cp_points = self.cp_points.to(device)
         return self
 
     @abc.abstractmethod

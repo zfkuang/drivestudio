@@ -168,6 +168,7 @@ class WaymoPixelSource(ScenePixelSource):
                 end_timestep=self.end_timestep,
                 load_dynamic_mask=self.data_cfg.load_dynamic_mask,
                 load_sky_mask=self.data_cfg.load_sky_mask,
+                load_completed_depths=self.data_cfg.load_completed_depths,
                 downscale_when_loading=self.data_cfg.downscale_when_loading[idx],
                 undistort=self.data_cfg.undistort,
                 buffer_downscale=self.buffer_downscale,
@@ -380,6 +381,7 @@ class WaymoLiDARSource(SceneLidarSource):
         origins, directions, ranges, laser_ids = [], [], [], []
         # flow/ground info are used for evaluation only
         flows, flow_classes, grounds = [], [], []
+        cp_points = []
         # in waymo, we simplify timestamps as the time indices
         timesteps = []
 
@@ -392,11 +394,12 @@ class WaymoLiDARSource(SceneLidarSource):
             # from left to right:
             # origins: 3d, points: 3d, flows: 3d, flow_class: 1d,
             # ground_labels: 1d, intensities: 1d, elongations: 1d, laser_ids: 1d
+            # Update: 6 more dimensions for camera projection points
             lidar_info = np.memmap(
                 self.lidar_filepaths[t],
                 dtype=np.float32,
                 mode="r",
-            ).reshape(-1, 14)
+            ).reshape(-1, 20)
             original_length = len(lidar_info)
             accumulated_num_original_rays += original_length
 
@@ -412,7 +415,9 @@ class WaymoLiDARSource(SceneLidarSource):
             lidar_flow_classes = torch.from_numpy(lidar_info[:, 9]).long()
             ground_labels = torch.from_numpy(lidar_info[:, 10]).long()
             # we don't collect intensities and elongations for now
-
+            
+            lidar_cp_points = torch.from_numpy(lidar_info[:, 14:20]).float()
+            
             # select lidar points based on a truncated ego-forward-directional range
             # this is to make sure most of the lidar points are within the range of the camera
             valid_mask = torch.ones_like(lidar_origins[:, 0]).bool()
@@ -428,6 +433,7 @@ class WaymoLiDARSource(SceneLidarSource):
             lidar_flows = lidar_flows[valid_mask]
             lidar_flow_classes = lidar_flow_classes[valid_mask]
             ground_labels = ground_labels[valid_mask]
+            lidar_cp_points = lidar_cp_points[valid_mask]
             # transform lidar points from lidar coordinate system to world coordinate system
             lidar_origins = (
                 self.lidar_to_worlds[t][:3, :3] @ lidar_origins.T
@@ -454,6 +460,7 @@ class WaymoLiDARSource(SceneLidarSource):
             flows.append(lidar_flows)
             flow_classes.append(lidar_flow_classes)
             grounds.append(ground_labels)
+            cp_points.append(lidar_cp_points)
             # we use time indices as the timestamp for waymo dataset
             timesteps.append(lidar_timestamp)
 
@@ -479,7 +486,8 @@ class WaymoLiDARSource(SceneLidarSource):
         self.flows = torch.cat(flows, dim=0) / 10.0
         self.flow_classes = torch.cat(flow_classes, dim=0)
         self.grounds = torch.cat(grounds, dim=0).bool()
-
+        self.cp_points = torch.cat(cp_points, dim=0)
+        
         # the underscore here is important.
         self._timesteps = torch.cat(timesteps, dim=0)
         self.register_normalized_timestamps()
@@ -503,6 +511,7 @@ class WaymoLiDARSource(SceneLidarSource):
         ranges = self.ranges[self.timesteps == time_idx]
         normalized_time = self.normalized_time[self.timesteps == time_idx]
         flows = self.flows[self.timesteps == time_idx]
+        cp_points = self.cp_points[self.timesteps == time_idx]
         return {
             "lidar_origins": origins,
             "lidar_viewdirs": directions,
@@ -510,6 +519,7 @@ class WaymoLiDARSource(SceneLidarSource):
             "lidar_normed_time": normalized_time,
             "lidar_mask": self.timesteps == time_idx,
             "lidar_flows": flows,
+            "lidar_cp_points": cp_points,
         }
 
     def delete_invisible_pts(self) -> None:
@@ -525,6 +535,7 @@ class WaymoLiDARSource(SceneLidarSource):
             self._timesteps = self._timesteps[self.visible_masks]
             self._normalized_time = self._normalized_time[self.visible_masks]
             self.colors = self.colors[self.visible_masks]
+            self.cp_points = self.cp_points[self.visible_masks]
             logger.info(
                 f"[Lidar] {num_bf - self.visible_masks.sum()} out of {num_bf} points are cleared. {self.visible_masks.sum()} points left."
             )

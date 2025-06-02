@@ -169,7 +169,69 @@ class DrivingDataset(SceneDataset):
             assert (pixel_source._unique_normalized_timestamps - lidar_source._unique_normalized_timestamps).abs().sum().item() == 0., \
                 "The timestamps of the pixel source and the lidar source are not synchronized"
         return pixel_source, lidar_source
-    
+
+    def get_depth_samples(
+        self,
+        num_samples: float = None,
+        downsample_factor: float = None,
+        return_color=False,
+        return_normalized_time=False,
+        device: torch.device = torch.device("cpu")
+    ):
+        assert self.pixel_source is not None, "Must have pixel source if you want to get init pcd"
+        assert (num_samples is None) != (downsample_factor is None), \
+            "Must provide either num_samples or downsample_factor, but not both"
+            
+        all_pts_list = []
+        all_colors_list = []
+        all_time_list = []
+        logger.info(f"Getting depth samples from {len(self.pixel_source.camera_list)} cameras")
+        for cam_id in self.pixel_source.camera_list:
+            cam = self.pixel_source.camera_data[cam_id]
+            for depth_frame_idx in range(len(cam.completed_depths)):
+                frame_idx = cam.completed_depth_timesteps[depth_frame_idx]
+                image_infos, cam_infos = cam.get_image(frame_idx)
+                completed_depth = image_infos["completed_depth"]
+                if completed_depth is None:
+                    continue
+                origins = image_infos["origins"]
+                viewdirs = image_infos["viewdirs"]
+                direction_norm = image_infos["direction_norm"]
+                bg_masks = torch.ones_like(completed_depth).bool()
+                dynamic_masks = image_infos["dynamic_masks"].bool() if "dynamic_masks" in image_infos else ~bg_masks
+                sky_masks = image_infos["sky_masks"].bool() if "sky_masks" in image_infos else ~bg_masks     
+                egocar_masks = image_infos["egocar_masks"].bool() if "egocar_masks" in image_infos else ~bg_masks
+                bg_masks[dynamic_masks | sky_masks | egocar_masks] = 0.
+                
+                pts_xyz = origins + completed_depth[..., None] * viewdirs * direction_norm # Z-depth
+                pts_colors = image_infos["pixels"][..., :3]
+                
+                pts_xyz = pts_xyz[bg_masks]
+                pts_colors = pts_colors[bg_masks]
+                
+                all_pts_list.append(pts_xyz)
+                all_colors_list.append(pts_colors)
+                all_time_list.append(torch.zeros_like(pts_xyz[:, :1]) + frame_idx)
+                
+        all_pts = torch.cat(all_pts_list, dim=0)
+        all_colors = torch.cat(all_colors_list, dim=0)
+        all_time = torch.cat(all_time_list, dim=0)
+        
+        if downsample_factor is not None:
+            num_samples = int(len(all_pts) / downsample_factor)
+        if num_samples > len(all_pts):
+            logger.warning(f"num_samples {num_samples} is larger than the number of points {len(all_pts)}")
+            num_samples = len(all_pts)
+            
+        sampled_idx = torch.randperm(len(all_pts))[:num_samples]
+        sampled_pts = all_pts[sampled_idx].to(device)
+        sampled_colors = all_colors[sampled_idx].to(device)
+        sampled_time = all_time[sampled_idx].to(device)
+        
+        return sampled_pts, sampled_colors, sampled_time
+            
+            
+
     def get_lidar_samples(
         self, 
         num_samples: float = None,

@@ -52,6 +52,7 @@ class VanillaGaussians(nn.Module):
         self.device = device
         self.ball_gaussians=self.ctrl_cfg.get("ball_gaussians", False)
         self.gaussian_2d = self.ctrl_cfg.get("gaussian_2d", False)
+        self.scale_init_multiplier = self.ctrl_cfg.get("scale_init_multiplier", 1.0)
         
         # for evaluation
         self.in_test_set = False
@@ -81,6 +82,9 @@ class VanillaGaussians(nn.Module):
         
         distances, _ = k_nearest_sklearn(self._means.data, 3)
         distances = torch.from_numpy(distances)
+        
+        # Clamp to prevent log(0)
+        distances = torch.clamp(distances, 0.01)
         # find the average of the three nearest neighbors for each point and use that as the scale
         avg_dist = distances.mean(dim=-1, keepdim=True).to(self.device)
         if self.ball_gaussians:
@@ -90,6 +94,7 @@ class VanillaGaussians(nn.Module):
                 self._scales = Parameter(torch.log(avg_dist.repeat(1, 2)))
             else:
                 self._scales = Parameter(torch.log(avg_dist.repeat(1, 3)))
+        self._scales = Parameter(torch.log(avg_dist.repeat(1, 3)) * self.scale_init_multiplier)
         self._quats = Parameter(random_quat_tensor(self.num_points).to(self.device))
         dim_sh = num_sh_bases(self.sh_degree)
 
